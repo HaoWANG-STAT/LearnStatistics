@@ -1,0 +1,138 @@
+---
+title: "Do you really need a multilevel model?"
+format: html
+editor: visual
+toc: true
+toc-depth: 3
+toc-location: left
+toc-expand: true
+reference-location: margin
+embed-resources: TRUE
+params:
+---
+
+Original article: <https://rpsychologist.com/do-you-need-multilevel-powerlmm-0-4-0>
+
+```{r}
+#| label: install and load package 
+
+# If R package is already install - load it; if not installed, install it
+if (!requireNamespace('powerlmm', quietly = TRUE)) {
+    devtools::install_github("rpsychologist/powerlmm")
+}
+
+suppressPackageStartupMessages({
+  require('powerlmm')
+  require('lmerTest') 
+  library(ggplot2)
+  library(viridis)
+  library(tidyverse))
+  library(broom)
+})
+
+```
+
+### **Do I really need a LMM? 2-lvl LMM versus ANCOVA**
+
+```{r}
+#| label: setup the models and run the simulation
+
+nsim <- 5000
+cores <- 16
+
+p <- study_parameters(n1 = 11,
+                      n2 = 40, # per treatment
+                      icc_pre_subject = 0.5,
+                      cor_subject = -0.5,
+                      var_ratio = c(0),
+                      dropout = c(0),
+                      effect_size = cohend(c(0.8)))
+
+# Formulas --------------------------------------------------------------------
+# OLS (t-test)
+f_PT <- sim_formula("y ~ treatment",
+                    test = "treatment",
+                    data_transform = transform_to_posttest)
+
+# ANCOVA
+f_PT_pre <- sim_formula("y ~ treatment + pretest",
+                        test = "treatment",
+                        data_transform = transform_to_posttest)
+
+# analyze as 2-level longitudinal
+f_LMM <- sim_formula("y ~ time * treatment +
+                         (1 + time | subject)")
+
+# constrain treatment differences at pretest
+f_LMM_c <- sim_formula("y ~ time + time:treatment +
+                         (1 + time | subject)")
+
+# combine formulas
+f <- sim_formula_compare("posttest" = f_PT,
+                         "ANCOVA" = f_PT_pre,
+                         "LMM" = f_LMM,
+                         "LMM_c" = f_LMM_c)
+
+# Run sim --------------------------------------------------------------------
+res <- simulate(p,
+                formula = f,
+                nsim = nsim,
+                cores = cores,
+                satterthwaite = TRUE,
+                batch_progress = FALSE)
+```
+
+
+```{r}
+#| label: summarize the results for the treatment effect
+# need to specify what parameter estimates the treatment effect.
+tests <-  list("posttest" = "treatment",
+               "ANCOVA" = "treatment",
+               "LMM" = "time:treatment",
+               "LMM_c" = "time:treatment")
+
+x <- summary(res, para = tests) %>% 
+  broom::tidy()
+
+```
+
+```{r}
+
+# re-order
+x$model <- factor(x$model, levels = c("posttest",
+                                      "ANCOVA", 
+                                      "LMM", 
+                                      "LMM_c")) 
+# Set custom limits per facet
+d_limits <- data.frame(effect_size = c(0), 
+                       Power_satt = c(0.025, 0.075),
+                       var_ratio = 0, 
+                       model = 0,
+                       dropout = 0)
+
+# Set hlines per facet
+d_hline <- data.frame(effect_size = c(0, 0.8), 
+                      x = c(0.05, 0.8))
+
+# Plot
+ggplot(x, aes(model, 
+               Power_satt,
+              # group = interaction(var_ratio, dropout), 
+               #color = factor(var_ratio),
+               #linetype = factor(dropout))
+              )) + 
+    geom_hline(data = d_hline,  aes(yintercept = x), linetype = "dotted") +
+    geom_point() + 
+    geom_blank(data = d_limits) +
+    geom_line() +
+    labs(y = "Power (Satterthwaite)",
+         linetype = "Dropout",
+         color = "Variance ratio",
+         title = "Power and Type I error") +
+    facet_grid(dropout ~ effect_size, 
+               scales = "free", 
+               labeller = "label_both") +
+    coord_flip() +
+    theme_minimal() +
+    scale_color_viridis_d()
+```
