@@ -13,6 +13,8 @@ params:
 
 Original article: <https://rpsychologist.com/do-you-need-multilevel-powerlmm-0-4-0>
 
+R code for multiple level data simulation: <https://github.com/rpsychologist/powerlmm/blob/master/R/simulate_3lvl_data.R>
+
 ```{r}
 #| label: install and load package 
 
@@ -82,7 +84,6 @@ res <- simulate(p,
                 batch_progress = FALSE)
 ```
 
-
 ```{r}
 #| label: summarize the results for the treatment effect
 # need to specify what parameter estimates the treatment effect.
@@ -98,4 +99,3 @@ x <- summary(res, para = tests)
 #| label: start the shiny app
 shiny_powerlmm()
 ```
-
