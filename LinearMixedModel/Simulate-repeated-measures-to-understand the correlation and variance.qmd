@@ -1,0 +1,147 @@
+---
+title: "Repeated-Measures / Within-Subjects ANOVA in R"
+format: html
+editor: visual
+embed-resources: true
+---
+
+# **One-way repeated measures**
+
+<https://www.statskingdom.com/repeated-anova-calculator.html>
+
+<https://www.geeksforgeeks.org/repeated-measures-within-subjects-anova-in-r/>
+
+We will use a simulated dataset of Repeated-Measures. In this example, we'll assume we have a dataset where subjects are measured at 2 different time points.
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(corrplot)
+library(mvtnorm)
+```
+
+## Step 1: Simulate Data
+
+Treatment effect is defined as % mean change from baseline, assume data follows logNormal distribution. It's easy to know that $log(T2)=log(T1)+log(1-CfbPct/100)$
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Simulate data for 10 subjects measured at 3 time points
+CfbPct <- 70
+
+subject <- factor(rep(1:100))
+T1 <- 4 + rnorm(100, mean = 0, sd = 1)
+#T2 <- T1 + log(1-CfbPct/100)  # No variablity at all
+#T2 <- T1 + rnorm(100, mean = log(1-CfbPct/100),  sd=1) # No residual in this setting
+T2 <- 4 + rnorm(100, mean = 0, sd = 1) + rnorm(100, mean = log(1-CfbPct/100),  sd=1) # Add residual, ie, variability that can not be explained by subject and time), but without considering the intra-subject correlation
+
+# Create a data frame
+data <- data.frame(subject, T1, T2)
+```
+
+### Check the correlation and variability
+
+```{r}
+data %>% 
+  select(-subject) %>% ggplot() + 
+  geom_point(aes(x=T1, y=T2), color="red") +   
+  stat_cor(aes(x=T1, y=T2), p.accuracy = 0.001, r.accuracy = 0.01, color="red")  + 
+  geom_point(aes(x=T1, y=T2_1), color="blue") +
+  stat_cor(aes(x=T1, y=T2_1), p.accuracy = 0.001, r.accuracy = 0.01, 
+           color="blue", label.x.npc="center")
+
+out1 <- data %>% summarise(sdT1=sd(T1), 
+                           sdT2=sd(T2), 
+                           COV=cov(T1, T2))
+
+out1 %>% mutate(r=COV/(sdT1*sdT2))
+```
+
+### Simulate data considering intra-subject correlation
+
+$yij=a+𝞫1*treatment+𝞼(time)+𝞼$
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Simulate data for 10 subjects measured at 3 time points
+CfbPct <- 70
+
+# generate data using multivariate normal distribution
+nPerArm <- 3
+nTot <- nPerArm*2
+rho <- 0.7
+sigma <- 1 # between subject
+withinsub <- 0.5 # within subject
+
+v <- matrix(c(sigma^2, rho * sigma^2, rho * sigma^2, sigma^2), ncol = 2)
+
+sigma <- matrix(c(1, 0.7, 0.7, 1), ncol=2)
+
+tibble(subject=rep(1:nTot, each=2),
+               time=rep(1:2, nTot),
+               arm=c(rep(0, nTot), rep(1, nTot))
+       ) %>% 
+  rowwise() %>% 
+  mutate(rmvnorm(n=1, mean=c(4, 4+log(1-CfbPct/100)*arm), sigma=v) )
+ 
+cor(response)
+```
+
+### Step 2: Fit the Repeated-Measures ANOVA Model
+
+```{r}
+
+dLong <- data %>% select(-T2_1) %>% pivot_longer(cols=c(T1,  T2),
+                               names_to = "time", 
+                               values_to = "response")
+
+# Perform Repeated-Measures ANOVA
+aov_model <- aov(response ~ time + Error(subject), data = dLong)
+
+# View the summary of the ANOVA
+summary(aov_model)
+```
+
+```{r}
+lmer_model <- lme4::lmer(response ~ time+(1|subject), data=dLong, REML = TRUE)
+summary(lmer_model)
+
+```
+
+```{r}
+data %>% group_by(time) %>% summarise(mean(response))
+
+data %>% summarise(mean(response))
+
+# overall sum of square 
+ss_tot <- var(data$response)*(30-1)
+
+# sum of square for between time
+ss_time <- 10*((55.36234-54.76448)^2+
+    (53.07152	-54.76448)^2+
+    (55.85958 -54.76448)^2
+)
+
+# sum of square for within subject
+d1 <- data %>% group_by(subject) %>% summarise(subjmean=mean(response)) %>% bind_cols(
+  data %>% pivot_wider(names_from = time, values_from = response) %>% 
+  select(-subject) ) %>% 
+  mutate(dev1=((T1-subjmean)^2+(T2-subjmean)^2+(T3-subjmean)^2),
+         overallmean=mean(subjmean),
+         dev2=(subjmean-overallmean)^2)
+
+ss_sub_wthin <- d1 %>% summarise(sum(dev1))
+
+# sum of square for between subject
+ss_sub_between <- d1 %>% summarise(sum(dev2))
+  
+
+
+c(ss_tot, ss_time, ss_sub_wthin, ss_sub_between)
+#611.937+112.0754+44.22794-948.1631
+
+```

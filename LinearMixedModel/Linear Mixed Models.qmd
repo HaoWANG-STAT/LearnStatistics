@@ -1,0 +1,94 @@
+---
+title: "Linear Mixed Models"
+format: html
+editor: visual
+---
+
+## Mixed Design Example: Effect of Donezepil on Test Scores
+
+Suppose you want to test the efficacy of the Alzheimer’s drug, Donepezil on various cognitive tests. 8 subjects are divided into 2 groups, “without Donepezil”, and “with Donepezil”, and each subject is given 3 tests: “memory”, “reading”, and “verbal”. 8 subjects are divided into 2 groups, “without Donepezil”, and “with Donepezil”. Each subject repeats each test across 5 days.
+
+This is a mixed design because ‘drug’ is a between subject factor and both ‘test’ and ‘day’ are within subject factors.
+
+Let’s load in the data file and take a look:
+
+```{r}
+drugData<-read.csv("http://www.courses.washington.edu/psy524a/datasets/DrugTestMixed.csv")
+head(drugData)
+```
+
+Let’s not worry about the ‘day’ factor for now and plot the test scores across groups:
+
+```{r}
+# get the means and standard errors
+library(Rmisc)
+
+drugData.summary <- summarySE(drugData, measurevar="score", groupvars=c("drug","test"))
+
+ggplot(drugData.summary, aes(x=test,y=score,colour = drug, group = drug)) +
+  geom_errorbar(aes(ymin=score-se, ymax=score+se), width=.2) +
+  geom_line() +
+  theme_bw() +
+  geom_point(size = 5)
+```
+
+It looks like test scores are slightly higher with Donepezil, but the overlapping error bars mean that it might not be statistically significant. Also, there doesn’t look like there’s much difference across test scores. Let’s run the regression analysis, leaving out the interaction. We’ll use ‘(1\|subject)’ as the random effect.
+
+```{r}
+# Run the ANOVA
+lmer5.out <- lmer(score ~ test + drug + (1|subject),data =drugData)
+anova(lmer5.out)
+```
+
+As predicted from the graph, the effects of the drug are not statistically significant, nor is there a significant difference in scores across the tests.
+
+To understand how the regression model fit the data, it helps to look at the best fitting coeficents, or beta weights:
+
+```{r}
+#| warning: false
+coef(lmer5.out)
+```
+
+The coeficients tell us how the model predicts each data point. Notice how using ‘(1\|subject)’ as the random effect in lmer allows for a different intercept for each subject. However, the coeficients for the other levels are all the same. That’s because test and drug are fixed factors. We can use these coeficients to see the model predictions. Since ‘memory’ is the first level alphabetically in the test levels, the effects of the other levels are added to the ‘memory’ score. For example, subject S1, who is in the ‘without Donepezil’ group, has a predicted test score for ‘memory’ that is this subject’s intercept plus the effect of being in the ‘without Donepizil’ group:
+
+48.006−9.0566=38.949448.006−9.0566=38.9494
+
+This subject’s predicted score for the ‘reading’ group is this subject’s intercept plus the effect of being in the ‘without Donepizil’ group plus the effect of being in the ‘reading’ group:
+
+48.006−9.0566+3.10335=42.052748.006−9.0566+3.10335=42.0527
+
+What about the ‘day’ factor? It turns out that there is a significant amount of learning across days in this (fake) data set. We can see this by plotting the test scores across days (averaging across the three tests) for each subject:
+
+But what about ‘day’?
+
+```{r}
+drugData.day.summary <- summarySE(drugData, measurevar="score", groupvars=c("day","subject"))
+drugData.day.summary$day <- ordered(drugData.day.summary$day, levels = c("Mon","Tue","Wed","Thu","Fri"))
+ggplot(drugData.day.summary, aes(x=day,y=score,colour = subject, group = subject)) +
+  geom_errorbar(aes(ymin=score-se, ymax=score+se), width=.2) +
+  geom_line() +
+  theme_bw() +
+  geom_point(size =3)
+```
+
+the improvement in scores across the week? ‘day’ is a random effect variable, since it’s a variable that influences our results but we’re not interested in it as part of our study. To account for it, we add five more parameters to the model: an intercept for each day by adding ‘(1\|day)’ as a random effect:
+
+```{r}
+lmer6.out <- lmer(score ~ test + drug + (1|subject),data =drugData)
+summary(lmer6.out)
+coef(lmer6.out)
+
+```
+
+```{r}
+lmer7.out <- lmer(score ~ test + drug + (1|subject) + day,data =drugData)
+anova(lmer7.out)
+
+coef(lmer7.out)
+```
+
+```{r}
+predDrugData <- drugData
+# replace the real dv 'score' with the predicted scores
+predDrugData$score <- predict(lmer6.out)
+```

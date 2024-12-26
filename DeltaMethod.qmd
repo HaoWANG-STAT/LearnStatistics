@@ -1,0 +1,144 @@
+---
+title: "LogisticRegression"
+format: html
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| label: setup
+
+library("msm")
+```
+
+# Delta method
+
+<https://stats.oarc.ucla.edu/r/faq/how-can-i-estimate-the-standard-error-of-transformed-regression-parameters-in-r-using-the-delta-method/>
+
+-   Taylor series approximation: $G(X) \approx G(\mu_X) + \nabla G(\mu_X)^T (X-\mu_X)$
+
+-   Variance of the transformation of $𝑋,𝐺(𝑋)$ is $Var(G(X)) \approx \nabla G(\mu_X)^T Cov(X) \nabla G(\mu_X)$
+
+## Example 1: Adjusted prediction
+
+```{r}
+#| echo: false
+#| label: delta method
+
+# We would like to calculate the standard error of the adjusted prediction of y at the mean of x, 5.5, from the linear regression of y on x
+x <- 1:10
+mean(x)
+
+y <- c(1,3,3,4,5,7,7,8,9,10)
+m1 <- lm(y~x)
+summary(m1)
+
+# to get the vector of partial derivatives of G(B)
+grad <- c(1, 5.5)
+
+# get the covariance matrix of B using vcov on the model object
+vb <- vcov(m1)
+vb
+
+# approximate the standard error using the formula above
+vG <- t(grad) %*% vb %*% grad
+sqrt(vG)
+
+# predict function with se.fit=T calculates delta method standard errors, so we can check our calculations against those from predict
+predict(m1, newdata=data.frame(x=5.5), se.fit=T)
+
+# we are ready to use the deltamethod function in the msm package
+deltamethod(~ x1 + 5.5*x2, coef(m1), vcov(m1))
+
+```
+
+### Example 2: Odds ratio
+
+As odds ratios are simple non-linear transformations of the regression coefficients, we can use the delta method to obtain their standard errors.
+
+We can use the same procedure as before to calculate the delta method standard error. First we define the transformation function, here a simple exponentiation of the coefficient for math:
+
+$$ G(B) = \exp(b_2) $$
+
+```{r}
+#| echo: false
+#| label: delta method
+
+# run our logistic regression using glm with family=binomial
+d <- read.csv("https://stats.idre.ucla.edu/stat/data/hsbdemo.csv")
+d$honors <- factor(d$honors, levels=c("not enrolled", "enrolled"))
+m3 <- glm(honors ~ female + math + read, data=d, family=binomial)
+summary(m3)
+
+# we simply exponentiate the coefficients to express them as odds ratios
+b2 <- coef(m3)[3]
+exp(b2)
+
+# The gradient is again very easy to obtain manually
+grad <- exp(b2)
+grad
+
+# Because our transformation only involves the coefficient for math, we do not want the entire covariance matrix of all regression parameters. We only want the variance of the math coefficient:
+#do not want this
+vcov(m3)
+#want this instead
+vb2 <- vcov(m3)[3,3]
+vb2
+
+# we are ready to calculate our delta method standard error
+vG <- grad %*% vb2 %*% grad
+sqrt(vG)
+
+# Let's confirm our findings with deltamethod:
+deltamethod(~ exp(x1), b2, vb2)
+
+```
+
+### Example 3: Relative risk
+
+In the previous 2 examples, the gradient was easy to calculate manually because the partial derivatives of the transformation function were easy to determine. Many times, however, the gradient is laborious to calculate manually, and in these cases the **`deltamethod`** function can really save us some time. As before, we will calculate the delta method standard errors manually and then show how to use **`deltamethod`** to obtain the same standard errors much more easily.
+
+$$
+G(X) = \frac{\frac{1}{1 + \exp(-b_0 – b_1 \cdot X_1)}}{\frac{1}{1 + \exp(-b_0 – b_1 \cdot X_2)}}
+$$
+
+i.e.
+
+$$
+G(X) = \frac{1 + \exp(-b_0 – b_1 \cdot X_2)}{1 + \exp(-b_0 – b_1 \cdot X_1)}
+$$
+
+```{r}
+#| echo: false
+#| label: delta method
+
+d <- read.csv("https://stats.idre.ucla.edu/stat/data/hsbdemo.csv")
+d$honors <- factor(d$honors, levels=c("not enrolled", "enrolled"))
+m4 <- glm(honors ~ read, data=d, family=binomial)
+summary(m4)
+
+p50 <- predict(m4, newdata=data.frame(read=50), type="response")
+p50
+p40 <- predict(m4, newdata=data.frame(read=40), type="response")
+p40
+rel_risk <- p50/p40
+rel_risk
+
+x1 <- 50
+x2 <- 40
+b0 <- coef(m4)[1]
+b1 <- coef(m4)[2]
+deltamethod( ~ (1 + exp(-x1 - 40*x2))/(1 + exp(-x1 - 50*x2)), c(b0, b1), vcov(m4))
+```
+
+In sum, R provides a convenient function to approximate standard errors of transformations of regression coefficients with the function **`deltamethod`**. All that is needed is an expression of the transformation and the covariance of the regression parameters.
+
+### Example 4: Risk difference
+
+```{r}
+
+risk_diff <- p50- p40
+risk_diff
+
+deltamethod( ~ (1 + exp(-x1 - 50*x2))^(-1) - (1 + exp(-x1 - 40*x2))^(-1), c(b0, b1), vcov(m4))
+```
