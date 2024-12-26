@@ -94,3 +94,8 @@ tests <-  list("posttest" = "treatment",
 x <- summary(res, para = tests) 
 ```
 
+```{r}
+#| label: start the shiny app
+shiny_powerlmm()
+```
+
