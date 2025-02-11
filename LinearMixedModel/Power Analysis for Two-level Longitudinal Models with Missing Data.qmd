@@ -11,9 +11,19 @@ embed-resources: TRUE
 params:
 ---
 
-Original article: <https://rpsychologist.com/do-you-need-multilevel-powerlmm-0-4-0>
+Original articles:
 
-R code for multiple level data simulation: <https://github.com/rpsychologist/powerlmm/blob/master/R/simulate_3lvl_data.R>
+Do you really need a multilevel model?
+
+<https://rpsychologist.com/do-you-need-multilevel-powerlmm-0-4-0>
+
+Heterogeneous treatment effects and homogeneous outcome variances <https://rpsychologist.com/HTE-variance-ratio>
+
+Online trial planning tool:
+
+<https://powerlmmjs.rpsychologist.com/>
+
+R code for multi-level data simulation: <https://github.com/rpsychologist/powerlmm/blob/master/R/simulate_3lvl_data.R>
 
 ```{r}
 #| label: install and load package 
