@@ -123,5 +123,5 @@ scenarios <- scenario_list(n = n, frac = frac, rho = rho)
 
 #--- run locally ---#
 
-summary_stats <- rbindlist(lapply(scenarios, function(a) s_replicate(a, nsim = 1000)))
+summary_stats <- rbindlist(lapply(scenarios, function(a) s_replicate(a, nsim = 10000)))
 summary_stats
