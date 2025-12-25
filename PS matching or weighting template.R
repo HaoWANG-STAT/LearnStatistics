@@ -68,6 +68,7 @@ d <- data.frame(A, X, Y_C, Y_B, Y_S)
 # 目标人群ATT/效应值-连续变量 ----
 # 加载所需的R包
 library("MatchIt")        # 用于进行倾向性评分匹配分析
+library("WeightIt")       # 用于进行倾向性评分加权分析
 library("marginaleffects")# 用于计算边际效应
 
 # 使用最近邻匹配法进行倾向性评分匹配
@@ -137,6 +138,33 @@ avg_comparisons(fit2,
                 comparison = "lnratioavg",
                 transform = "exp")
 # 如要计算OR，comparison设定为 "lnoravg"即可。
+
+## 估计ATE/效应值-二分类变量-RR-weighting方法 ----
+#PS weighting for the ATE with a logistic regression PS
+W <- weightit(A ~ X1 + X2 + X3 + X4 + X5 + 
+                X6 + X7 + X8 + X9, data = d,
+              method = "glm", estimand = "ATE")
+W
+#Logistic regression model with covariates
+fit <- glm_weightit(Y_B ~ A * (X1 + X2 + X3 + X4 + X5 + 
+                                 X6 + X7 + X8 + X9),
+                    data = d, weightit = W,
+                    family = binomial)
+
+#Compute effects; RR and confidence interval
+avg_comparisons(fit,
+                variables = "A",
+                comparison = "lnratioavg",
+                transform = "exp")
+
+# Compute predicted values for each treatment level
+avg_predictions(fit,
+                variables = "A")
+
+### 目标人群ATE/效应值-二分类变量-风险差RD ----
+avg_comparisons(fit,
+                variables = "A",
+                comparison = "differenceavg")
 
 
 # 目标人群ATE/效应值-生存结果-HR ----
