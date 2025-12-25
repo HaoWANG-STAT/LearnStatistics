@@ -1,0 +1,328 @@
+---
+title: "Robust Mixture Prior"
+format: html
+embed-resources: true
+---
+
+Here is the breakdown of how to mathematically connect the prior weight to the Effective Sample Size (ESS), followed by an implementation in R.
+
+Part 1: Selecting Weight Based on Effective Sample Size (ESS)
+
+In Bayesian design, we rarely pick the weight $w$ arbitrarily. Instead, we select $w$ to limit the amount of information we "borrow" from history. This is quantified as the Prior Effective Sample Size (ESS).The relationship between the weight $w$ and ESS in a mixture model is non-linear and depends on the "distance" between the informative and robust components.
+
+1\. The Concept (Morita's Definition)
+
+The most standard mathematical definition (Morita et al., 2008) equates the information in the prior to the information contained in a hypothetical number of observations.If our sampling distribution (likelihood) has a single observation information $I_1(\theta)$, and our prior $\pi(\theta)$ has information $I_\pi(\theta)$, then:$$ESS_{\pi} = \frac{I_\pi(\theta)}{I_1(\theta)}$$`<!-- -->`{=html}2. The Calculation
+
+For a robust mixture prior $\pi(\theta) = w\pi_{inf}(\theta) + (1-w)\pi_{rob}(\theta)$, the information $I_\pi(\theta)$ is defined by the curvature of the log-prior density (the second derivative).$$I_\pi(\theta) = - E \left[ \frac{\partial^2 \log \pi(\theta)}{\partial \theta^2} \right]$$Because the mixture density involves a logarithm of a sum ($\log(w \cdot A + (1-w) \cdot B)$), this usually creates a closed-form expression that is difficult to solve algebraically.
+
+3\. The Practical Strategy
+
+Practitioners generally use a numerical approach to select $w$:
+
+Define $\pi_{inf}$: Set the informative component based on historical data (e.g., $N_{hist} = 100$).
+
+Define $\pi_{rob}$: Set the robust component (e.g., Unit Information Prior, equivalent to $N=1$).
+
+Set Target ESS: Decide the maximum "strength" you want to borrow (e.g., "I want this prior to be worth no more than 20 patients").
+
+Solve for $w$: We numerically iterate $w$ (from 0 to 1) until the calculated ESS of the mixture matches the Target ESS.
+
+Key Insight: A 50% weight ($w=0.5$) does not generally mean you have 50% of the historical sample size. Due to the heavy tails of the robust component, you often need a higher weight to achieve a moderate ESS.
+
+Part 2: R Code Implementation
+
+We will use the RBesT package (R Bayesian Evidence Synthesis Tools). It is the pharmaceutical industry standard for RMPs because it automatically handles the complex ESS calculations described above.
+
+Scenario:History: A previous trial had 50 patients, observing a treatment effect of mean 1.5 (Standard Error 0.2).
+
+Goal: Create a Robust Mixture Prior that borrows from this history but limits the max ESS to 20 patients (we want to be conservative).
+
+```{r}
+library(RBesT)
+library(ggplot2)
+
+# --- STEP 1: Define Historical Data & Reference Scale ---
+# Historical study: N=50, Mean=1.5, SE=0.2
+map_prior <- mixnorm(c(1, 1.5, 0.2), param="ms")
+
+# Calculate the single-patient standard deviation (Reference Sigma)
+# We need this for the ESS calculation.
+ref_sigma <- 0.2 * sqrt(50) 
+
+# --- STEP 2: Solver Function ---
+target_ESS <- 20
+
+find_ESS_diff <- function(w_rob) {
+  # robustify() adds a robust component with weight 'w_rob'
+  # sigma=2 represents the wide/vague component width
+  tmp_prior <- robustify(map_prior, weight = w_rob, mean = 0, sigma = 2)
+  
+  # CRITICAL FIX: We must pass 'sigma = ref_sigma' to ess()
+  # so it knows what "one patient" looks like.
+  current_ESS <- ess(tmp_prior, method = "elir", sigma = ref_sigma)
+  
+  return(current_ESS - target_ESS)
+}
+
+# --- STEP 3: Solve for the Weight ---
+# Find the weight (between 1% and 99%) that gives us ESS = 20
+opt_result <- uniroot(find_ESS_diff, interval = c(0.01, 0.99))
+optimal_robust_weight <- opt_result$root
+
+# --- STEP 4: Create Final Prior ---
+robust_prior_final <- robustify(map_prior, weight = optimal_robust_weight, mean = 0, sigma = 2)
+
+# --- STEP 5: Inspect and Plot ---
+final_ESS <- ess(robust_prior_final, method = "elir", sigma = ref_sigma)
+
+print(paste("Reference Sigma (1 patient):", round(ref_sigma, 3)))
+print(paste("Required Weight on Robust Component:", round(optimal_robust_weight, 3)))
+print(paste("Final Effective Sample Size:", round(final_ESS, 1)))
+
+# Plot the distribution
+plot(robust_prior_final) + 
+  ggtitle(paste0("Robust Mixture Prior\n",
+                 "Target ESS: 20 (Actual: ", round(final_ESS, 1), ")\n",
+                 "Robust Weight: ", round(optimal_robust_weight, 2))) +
+  theme_bw()
+```
+
+To calculate the Operating Characteristics (OC), we perform a **simulation study**. We repeatedly simulate the new trial under different "Truth" scenarios (e.g., the drug works, the drug doesn't work) and calculate two things:
+
+1.  **Type I Error (False Positive Rate):** If the drug truly has **zero effect**, how often does our Robust Mixture Prior trick us into declaring success because of the historical bias?
+
+2.  **Power:** If the drug **truly works**, how often do we correctly declare success?
+
+We will use the `oc1S` function (Operating Characteristics for 1 Sample) from `RBesT`.
+
+```{R}
+library(RBesT)
+library(ggplot2)
+library(dplyr)
+
+# --- 1. SETUP PRIORS ---
+# A. Historical Data (Reference Scale)
+ref_sigma <- 1 * sqrt(50) # Approx 1.414
+
+# B. Simple Informative Prior (Pure History)
+# This assumes the history is 100% relevant. No robust component.
+simple_inf_prior <- mixnorm(c(1, 1.5, 1), param="ms")
+simple_inf_prior1 <- mixnorm(c(1, 2, 1), param="ms")
+
+# C. Robust Mixture Prior (Target ESS = 20)
+# Uses the informative component mixed with a vague component
+robust_prior <- robustify(simple_inf_prior, weight = 0.44, mean = 0, sigma = 2)
+
+# D. Standard Flat Prior (No History)
+flat_prior <- mixnorm(c(1, 0, 100), param="ms")
+
+# --- 2. DEFINE SIMULATION FUNCTION ---
+simulate_power <- function(prior, n_patients, true_mean, sigma, decision_thresh, iterations=2000) {
+  trial_se <- sigma / sqrt(n_patients)
+  success_count <- 0
+  
+  for(i in 1:iterations) {
+    obs_mean <- rnorm(1, mean = true_mean, sd = trial_se)
+    posterior <- postmix(prior, m = obs_mean, se = trial_se)
+    
+    # Decision: Probability Mean > 0
+    prob_positive <- pmix(posterior, 0, lower.tail = FALSE)
+    
+    if(prob_positive > decision_thresh) {
+      success_count <- success_count + 1
+    }
+  }
+  return(success_count / iterations)
+}
+
+# --- 3. RUN SIMULATION ---
+true_effects <- seq(0, 2, by = 0.2)
+n_new <- 50
+threshold <- 0.975 
+
+results <- data.frame()
+print("Starting 3-Way Simulation...")
+
+for(mu in true_effects) {
+  # 1. Robust
+  p_rob <- simulate_power(robust_prior, n_new, mu, ref_sigma, threshold)
+  results <- rbind(results, data.frame(TrueMean=mu, Power=p_rob, Method="Robust Mixture"))
+  
+  # 2. Standard
+  p_flat <- simulate_power(flat_prior, n_new, mu, ref_sigma, threshold)
+  results <- rbind(results, data.frame(TrueMean=mu, Power=p_flat, Method="Standard (Flat)"))
+  
+  # 3. Simple Informative
+  p_inf <- simulate_power(simple_inf_prior1, n_new, mu, ref_sigma, threshold)
+  results <- rbind(results, data.frame(TrueMean=mu, Power=p_inf, Method="Simple Informative"))
+}
+
+# --- 4. VISUALIZE ---
+# We define custom colors to make the distinction clear
+# Red = Danger (Simple Informative), Green = Safe (Standard), Blue = Balanced (Robust)
+
+
+
+ggplot(results, aes(x = TrueMean, y = Power, color = Method)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0.025, linetype = "dashed") +
+  scale_y_continuous(breaks = seq(0, 1, 0.1), limits = c(0, 1)) +
+  scale_color_manual(values = c("Robust Mixture" = "blue", 
+                                "Standard (Flat)" = "darkgreen", 
+                                "Simple Informative" = "red")) +
+  labs(title = "The Danger of Naïve Borrowing",
+       subtitle = "Why we need the Robust Component",
+       x = "True Treatment Effect",
+       y = "Probability of Success (Power)") +
+  theme_bw()
+
+# Print the Type I Errors
+t1_inf <- results[results$TrueMean == 0 & results$Method == "Simple Informative", "Power"]
+print(paste("Type I Error (Simple Informative):", t1_inf))
+```
+
+-   **Posterior Weights** tell you **"Who is driving the car?"** (The Informative Prior or the Robust Prior?)
+
+-   **Posterior Probability** tells you **"Where is the car going?"** (Is the drug effective?)
+
+-   The **Robustness** comes from the fact that if the data is bad, the **Posterior Weight** shifts to the Robust component, which then steers the **Posterior Probability** towards a safer, unbiased conclusion.
+
+```{r}
+library(RBesT)
+
+# 1. Setup Prior
+map_prior <- mixnorm(c(1, 1.5, 0.2), param="ms")
+robust_prior <- robustify(map_prior, weight = 0.5, mean = 0, sigma = 2)
+
+# 2. Update with CONFLICTING Data (Data says 0, History says 1.5)
+post_conflict <- postmix(robust_prior, m = 0, se = 0.2)
+
+# --- HOW TO SEE THE WEIGHTS ---
+
+# Method A: Just print the object directly
+print("--- Detailed Component View (Look for 'w' column) ---")
+print(post_conflict)
+
+# Method B: Extract just the weights specifically
+print("--- Extracted Weights ---")
+# Row 1 is usually the Informative Component
+# Row 2 is usually the Robust Component
+weights <- post_conflict["w",]
+names(weights) <- c("Informative (Comp 1)", "Robust (Comp 2)")
+print(round(weights, 4))
+```
+
+Math: How is the weight actually calculated?
+
+Since you asked about the relationship, here is the formula for how R calculates that new w. It uses the Marginal Likelihood (how well did each expert predict the data?).$$\tilde{w}_1 = \frac{w_1 \times L_1(Data)}{w_1 \times L_1(Data) + w_2 \times L_2(Data)}$$Where:$w_1, w_2$: The starting weights (e.g., 0.5, 0.5). $L_1(Data)$: The likelihood (probability) of seeing the new data if the Informative Expert was right. $L_2(Data)$: The likelihood of seeing the new data if the Robust Expert was right.Because the data fell far away from the Informative distribution, $L_1$ was a tiny number, causing the updated weight $\tilde{w}_1$ to crash to zero.
+
+```{r}
+library(RBesT)
+library(ggplot2)
+
+# --- 1. SETUP ---
+# Historical Data (The "Informative" Component)
+# Mean = 1.5, SE = 0.2
+map_prior <- mixnorm(c(1, 1.5, 0.2), param="ms")
+
+# Robust Mixture Prior
+# We give 50% initial trust to history, 50% to robust component
+# Note: In real life, the initial weight might be smaller, but 0.5 makes the visual clear.
+robust_prior <- robustify(map_prior, weight = 0.5, mean = 0, sigma = 2)
+
+# --- 2. SIMULATION LOOP ---
+# We test a range of possible outcomes for the new trial
+# From -1 (Conflict) to 1.5 (Match) to 4 (Conflict)
+outcome_grid <- seq(-1, 4, length.out = 200)
+
+# We assume the new trial has the same precision as the old one (SE = 0.2)
+trial_se <- 0.2
+
+# Function to calculate the posterior weight for a specific outcome
+get_posterior_weight <- function(observed_mean) {
+  # Update the prior with this specific outcome
+  post <- postmix(robust_prior, m = observed_mean, se = trial_se)
+  
+  # Extract the weight of Component 1 (The Informative Component)
+  # post[1, "w"] grabs the first row's weight
+  return(post["w", 1])
+}
+
+# Apply function to all outcomes
+weights <- sapply(outcome_grid, get_posterior_weight)
+
+# --- 3. VISUALIZATION ---
+plot_data <- data.frame(Outcome = outcome_grid, Weight = weights)
+
+
+
+ggplot(plot_data, aes(x = Outcome, y = Weight)) +
+  geom_line(color = "darkblue", linewidth = 1.5) +
+  
+  # Add reference line for the Historical Mean
+  geom_vline(xintercept = 1.5, linetype = "dashed", color = "red") +
+  annotate("text", x = 1.5, y = 0.1, label = "Historical Mean (1.5)", color = "red", angle = 90, vjust = -0.5) +
+  
+  labs(title = "The 'Trust' Curve: Dynamic Borrowing in Action",
+       subtitle = "How the model adjusts trust in history based on new data",
+       x = "Observed Mean in New Trial",
+       y = "Posterior Weight on Historical Component") +
+  theme_bw()
+```
+
+The mathematical beauty of a Mixture Prior is that it follows a "Divide and Conquer" strategy.Instead of trying to update the complex "double-humped" shape all at once, the math splits the problem into two standard Bayesian updates and then recombines them.Here is the step-by-step derivation of the formula.The Formula in Plain English"**The Posterior Mixture is a mixture of Posteriors."**To get the final distribution:Update the Shapes: You update the Informative Component and the Robust Component separately using the new data (changing their means and standard deviations).Update the Weights: You calculate which component predicted the data better (using Marginal Likelihood) and assign it a higher probability weight.Combine: You add the two updated shapes together using the updated weights.The Mathematical DerivationLet's denote:$\theta$: The treatment effect (parameter of interest).$y$: The new trial data.$L(y|\theta)$: The Likelihood function of the new data.Step 1: The Prior MixtureOur prior $\pi(\theta)$ is a weighted sum of two distributions (Experts):$$\pi(\theta) = w_1 \cdot \pi_{inf}(\theta) + w_2 \cdot \pi_{rob}(\theta)$$Step 2: Applying Bayes' TheoremWe multiply the Likelihood by the whole Prior:$$\pi(\theta | y) \propto L(y|\theta) \times [ w_1 \cdot \pi_{inf}(\theta) + w_2 \cdot \pi_{rob}(\theta) ]$$Because multiplication distributes over addition, we can distribute the Likelihood inside the brackets:$$\pi(\theta | y) \propto w_1 \cdot [L(y|\theta)\pi_{inf}(\theta)] + w_2 \cdot [L(y|\theta)\pi_{rob}(\theta)]$$Step 3: The Critical InsightLook at the terms inside the brackets (e.g., $L(y|\theta)\pi_{inf}(\theta)$). This is just a standard Bayesian update for a single component!We can rewrite each term as:$$L(y|\theta)\pi_{k}(\theta) = m_k(y) \cdot \pi_{k}(\theta | y)$$Where:$\pi_{k}(\theta | y)$ is the Individual Posterior (the updated shape of that component).$m_k(y)$ is the Marginal Likelihood (a single number representing how well that component predicted the data).Step 4: The Final EquationSubstituting that back in, we get the exact formula for the Posterior Distribution:$$\pi(\theta | y) = \tilde{w}_1 \cdot \pi_{inf}(\theta | y) + \tilde{w}_2 \cdot \pi_{rob}(\theta | y)$$Where the New Weights ($\tilde{w}$) are calculated as:$$\tilde{w}_1 = \frac{w_1 \cdot m_{inf}(y)}{w_1 \cdot m_{inf}(y) + w_2 \cdot m_{rob}(y)}$$
+
+### R Code Proof
+
+We can manually calculate these parts in R to prove the math matches the `RBesT` output.
+
+```{r}
+library(RBesT)
+
+# 1. SETUP
+# Prior: 50% History (1.5), 50% Robust (0)
+# We use sigma=1 for simplicity
+w_prior <- c(0.5, 0.5)
+prior_means <- c(1.5, 0)
+prior_sds   <- c(0.2, 2.0)
+
+# Data: The trial observes 0.5 (Conflict with history, but not total)
+# Standard Error (SE) = 0.2
+obs_mean <- 0.5
+obs_se   <- 0.2
+
+# 2. CALCULATE MARGINAL LIKELIHOODS (m_k)
+# The marginal likelihood of a Normal-Normal conjugate is a Normal density
+# evaluated at the observed data.
+# Variance = Prior_Variance + Data_Variance
+
+# Component 1 (Informative)
+var1 <- prior_sds[1]^2 + obs_se^2
+marg_lik_1 <- dnorm(obs_mean, mean = prior_means[1], sd = sqrt(var1))
+
+# Component 2 (Robust)
+var2 <- prior_sds[2]^2 + obs_se^2
+marg_lik_2 <- dnorm(obs_mean, mean = prior_means[2], sd = sqrt(var2))
+
+# 3. CALCULATE POSTERIOR WEIGHTS (tilde_w)
+# Numerator = Prior_Weight * Marginal_Likelihood
+num1 <- w_prior[1] * marg_lik_1
+num2 <- w_prior[2] * marg_lik_2
+
+# Normalize so they sum to 1
+denom <- num1 + num2
+post_w1 <- num1 / denom
+post_w2 <- num2 / denom
+
+print(paste("Manual Calc Weight 1:", round(post_w1, 5)))
+
+# 4. VERIFY WITH RBEST
+map_prior <- mixnorm(c(w_prior[1], prior_means[1], prior_sds[1]), 
+                     c(w_prior[2], prior_means[2], prior_sds[2]), param="ms")
+post_prior <- postmix(map_prior, m = obs_mean, se = obs_se)
+
+print("RBesT Output Weight 1:")
+print(post_prior["w", 1])
+```
