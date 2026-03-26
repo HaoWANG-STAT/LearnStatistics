@@ -1,0 +1,84 @@
+---
+title: "BP44551_ExploratoryAnalysis_GoNogoSimulation"
+subtitle: "Simulation of Go/No-Go based on results in allcomers and subpopulations"
+date: "`r Sys.Date()`"
+execute: 
+  echo: true
+format:
+  html:
+    page-layout: full
+    theme: united
+    toc: true
+    toc-float: true
+    toc-depth: 2
+    toc-location: left
+embed-resources: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+#set.seed(20250214) # set seed as analysis may have a stochastic component
+source(here::here("02-analysis", "fun_simulation.R"))
+source(here::here("02-analysis", "fun_OCgraph.R"))
+
+```
+
+
+```{r}
+#| label: import
+#| eval: false
+#| include: false
+
+#df_main <- arrow::read_parquet(file = here::here("data", "datasets", "df_main.parquet"))
+
+```
+
+
+```{r}
+#| label: run simulation and save results
+#| echo: false
+#| eval: true
+
+#--- scenarios to simulate ---#
+
+ n <- c(60)
+ sigma <- 0.96
+ rho <- c(0.7)
+ reduCtrl <- c(0, 0.1, -0.1)
+ reduTest <- seq(0, 0.9, 0.1)
+ 
+ scenarios <- expand.grid(n = n, sigma=sigma, rho = rho, reduCtrl = reduCtrl, 
+                          reduTest = reduTest) |> 
+   asplit(MARGIN = 1)
+ 
+ dataFile <- here::here("data", "outdata", "SubgroupSimulation_ctrl_minus10_absdiff.rds")
+ if (file.exists(dataFile)) {
+   summary_stats <- readRDS(dataFile)
+   message(paste0("Data read from ", dataFile, "."))
+ } else {
+   
+ summary_stats <- rbindlist(lapply(scenarios, function(a) s_replicate(argsvec = a, thresholdSub= c(50), effType = "abs",
+                                                                        nsim = 10000, seed = 12345)))
+ 
+ saveRDS(summary_stats, dataFile)
+ }
+
+```
+
+
+```{r}
+#| label: compare OC between reldiff and absdiff under various pbo effect
+#| echo: false
+#| eval: true
+
+dOC <- readRDS(here::here("data", "outdata", "SubgroupSimulation_absdiff.rds")) |> 
+    mutate(effType = "absdiff") |> 
+  bind_rows(readRDS(here::here("data", "outdata", "SubgroupSimulation_reldiff.rds")) |> 
+              mutate(effType = "reldiff"))
+
+createOCSummaryFigure_3ODM(d = dOC |> filter(reduCtrl == -0.1))
+createOCSummaryFigure_3ODM(d = dOC |> filter(reduCtrl == 0))
+createOCSummaryFigure_3ODM(d = dOC |> filter(reduCtrl == 0.1))
+```
+

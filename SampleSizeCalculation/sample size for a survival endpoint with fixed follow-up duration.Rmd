@@ -1,0 +1,56 @@
+---
+title: "sample size calculation for a survival endpoint if each subject is followed up for the same fixed duration"
+author: "Hao Wang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Study design and sample size from a case study
+
+In a phase 2, randomized, double-blind, placebo-controlled trial, we randomly assigned, in a 1:1:1 ratio, patients with bronchiectasis who had had at least two exacerbations in the previous year to receive placebo, 10 mg of brensocatib, or 25 mg of brensocatib once daily for **24 weeks**. The **time to the first exacerbation (primary end point)**, the rate of exacerbations (secondary end point), sputum neutrophil elastase activity, and safety were assessed.
+
+The sample size was estimated on the basis of a predicted **exacerbation rate in the placebo group of 1.2 events per patient per year**. Thus, it was estimated that the random assignment of 216 patients, in a 1:1:1 ratio across the three trial groups, with **72 patients per group** completing the trial, would provide the trial with **80% power to detect a hazard ratio of 0.58** (e.g., an approximate 40% difference in the time to the first exacerbation). We aimed to enroll 240 patients to ensure that approximately 216 patients would complete the trial.
+
+Study details can be found at <https://www.nejm.org/doi/full/10.1056/nejmoa2021713>
+
+Unfortunately, I cannot repeat the sample size using the code below.
+
+Reference: <https://pages.github.roche.com/adaptR/adaptR-tutorials/questionsAnswers.html#48_How_can_I_perform_a_sample_size_calculation_for_a_survival_endpoint_if_each_subject_is_followed_up_for_the_same_fixed_duration>
+
+```{r sample size calculation}
+library(rpact)
+
+rate <- 1.2/48 # rate per week
+fixedFollowUpTime <- 24 # follow-up duration
+
+# risk of experiencing the primary endpoint througout the follow-up period
+pi2 <- ppois(0, rate*fixedFollowUpTime, lower.tail = F)
+# alternatively, pi2 can be calculated 
+# pi2 <- 1- exp(-rate*duration)
+
+hr <- 0.58
+
+# Calculate required sample size assuming "instantaneous recruitment" (accrualTime=c(0,1E-6)) 
+# to ensure that all subjects have the same fixed 28 days follow-up duration
+ss1 <- getSampleSizeSurvival(alpha=0.05, sided=2, beta=0.2, allocationRatioPlanned = 1,
+                             hazardRatio = hr, 
+                             pi2=pi2, eventTime = fixedFollowUpTime,
+                             #lambda2 = rate,
+                             accrualTime=c(0,1E-6), 
+                             followUpTime = fixedFollowUpTime)
+summary(ss1)
+
+
+#piecewiseSurvivalTime <- getPiecewiseSurvivalTime(pi2 = pi2, eventTime=24, hazardRatio = hr)
+piecewiseSurvivalTime <- getPiecewiseSurvivalTime(lambda2 = rate, hazardRatio = hr)
+probEvent <- getEventProbabilities(time = 24, 
+    piecewiseSurvivalTime = piecewiseSurvivalTime,
+    #dropoutRate1 = 0.05, dropoutRate2 = 0, dropoutTime = 12,
+    accrualTime = 0, accrualIntensity = 176, maxNumberOfSubjects = 176)
+probEvent
+
+```
