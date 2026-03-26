@@ -1,0 +1,257 @@
+---
+  title: "Sample size considerations at a possible interim analysis"
+format: html
+embed-resources: TRUE
+editor: visual
+---
+
+```{r}
+#| label: setup
+#| echo: FALSE
+
+suppressPackageStartupMessages({
+library(rpact)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+})
+```
+
+```{r}
+#| label: trial-design
+#| echo: FALSE
+
+design <- getDesignGroupSequential(kMax = 1)
+```
+
+## Revisiting previous calculations
+
+This section is based on information on slide 4 of Interim_analysis_brainstorm_Jan2024.
+
+### Sputum nuetrophils
+
+> 80% power to detect absolute change of 10% (SD=15)
+
+It is not clear if this refers to a within-group difference between endpoint and baseline or a difference between groups. But assuming the power statement refers to a trial of size 60, it implies that the reference effect used in the calculation was approximately 11. Thus an "absolute change of 10%" would equate to an actual treatment effect of about 110.
+
+I'm not sure what an "absolute change of 10% means"...
+
+### Sputum IL1-β
+
+> No information provided.
+
+Possibly plasma IL1-β / https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8066753/ --\> IL1-β in pg/mL, mean (SD) 27.12 (29.84) 8.30 (1.98) 0.0000 --\>
+
+Konno et al (1996) report 191.3 ± 76.7 pg/mL for sputum IL1-β in asthmatics.
+
+### hs-CRP
+
+> Approx. 62% power to detect 30% reduction in active vs placebo with the following assumptions: \[=4.6 reduction from a 15.4 baseline CRP\] and sd=9, 10% two-sided sig level (based on CRP variability and placebo effect in LUTE & VERSE \[Lebrikizumab Asthma Studies\])
+
+> Approx. 75% power with 10% one sided or 20% two sided
+
+### FEV1
+
+> 36% power to detect 100mL difference in change from baseline (SD = 300mL) 60% power to detect 150mL difference in change from baseline (SD = 300mL) 80% power to detect 200mL difference in change from baseline (SD = 300mL)
+
+This is the clearest statement of assumptions, but ...
+
+```{r}
+#| label: power-fev1
+#| echo: FALSE
+
+results <- lapply(
+  seq(60, 90, 10),
+  function(n) {
+    tibble(
+      N = n,
+      Effect = seq(100, 200, 10)
+    ) %>% 
+    rowwise() %>% 
+    mutate(
+      Power = list(getPowerMeans(design, alternative = Effect, stDev = 300, maxNumberOfSubjects = n)$overallReject)
+    ) %>% 
+    unnest(Power) %>% 
+    ungroup()
+  }
+) %>% 
+bind_rows()
+
+results %>%
+  ggplot() +
+    geom_line(aes(x = Effect, y = Power, colour = as.factor(N))) +
+    geom_hline(
+      data = tibble(Y = c(0.36, 0.60, 0.80)), 
+      aes(yintercept = Y), linetype = "dashed", colour = "grey"
+    ) +
+    geom_vline(
+      data = tibble(X = c(100, 150, 200)),
+      aes(xintercept = X), linetype = "dashed", colour = "grey"
+    ) +
+    theme_light() +
+    labs(
+      x = "Mean difference in FEV1 between groups",
+      y = "Power",
+      title = "Power curves for different trial sizes",
+      colour = "Trial size"
+    )
+```
+
+... it's still not clear to what sample size the claims relate. The dotted lines refer to the stated study powers above. The intersections of the vertical and horizontal reference lines should all lie on a single power curve.
+
+## Biomarkers
+
+### Power for a given trial size
+
+> What is the effect of increasing the sample size from 60 to 90 on the chance to detect an effect of Selnoflast?
+
+This can't be answered in absolute terms without an estimate of the variation associated with each biomarker. However, it can be answered in terms of the standardised treatment effect, which is the mean difference between treatment group means, divided by its standard deviation. So the treatment effect in the presentations below is "the treatment effect expressed as a multiple of its standard deviation".
+
+As power is related to the square root of trial size, increasing the sample size from 60 to 90 should reduce the treatment effect that is detectable with any given power by `100 * (sqrt(90/60) - 1)` = `r sprintf("%.1f", 100 * (sqrt(90/60)-1))` percent. This is indeed the case.
+
+```{r}
+#| label: biomarkerSampleSize
+#| echo: FALSE
+
+delta <- seq(60, 90, 5)
+
+findEffect <- function(n, effect = 0.4, desiredPower = 0.8) {
+  step <- 0.01
+  found <- FALSE
+  while (!found) {
+    plan <- getPowerMeans(design, alternative = effect, maxNumberOfSubjects = n)
+    if (plan$overallReject < desiredPower) {
+      effect <- effect + step
+    } else {
+      found <- TRUE
+    }
+  }
+  tibble(
+    N = n,
+    Power = desiredPower,
+    ActualPower = plan$overallReject,
+    ReferenceEffect = effect,
+    MDD = 1.96 * sqrt(2/N)
+  )
+}
+
+results <- lapply(delta, findEffect) %>% bind_rows()
+results %>% 
+  pivot_longer(
+    c(ReferenceEffect, MDD),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>% 
+  ggplot() +
+    geom_line(aes(x = N, y = Value, colour = Measure)) +
+    labs(
+      x = "Trial size",
+      y = "Standardised treatment effect",
+      title = "Detectable difference by trial size"
+    ) +
+    scale_colour_discrete(
+      labels = c("Minimum Detectable Difference", "With 80% power")
+    ) +
+    theme_light()
+
+results %>% 
+  select(-ActualPower, -Power) %>% 
+  kable(
+    caption = "Detectable difference by trial size",
+    col.names = c("N", "With 80% power", "MDD"),
+    digits = c(0, 2, 2)
+  ) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+### Sample sizing a future trial
+
+Clearly, the results of a previous or ongoing trial can be used to calculate the necessary sample size for a future trial. However:
+
+-   This does not remove the obligation to determine the *smallest* *clinically relevant treatment effect*. Sizing on the basis of the previously observed effect will suffer from regression to the mean.
+
+-   Both the observed mean an the observed variance in the previous or ongoing trial are subject to variation.
+
+    -   The variance of the observed variance is considerably larger than the variance of the observed mean.
+
+    -   The variance of both reduces as the trial size increases.
+
+The extremes of the required trial size for a given pair of observed mean and variance values are given by pairing the largest reasonable variance estimate with the smallest reasonable treatment effect and the smallest reasonable variance effect with the largest reasonable treatment effect.
+
+[Cochran's Theorem](https://en.wikipedia.org/wiki/Cochran%27s_theorem#Sample_mean_and_sample_variance) states that the distribution of the sample variance is given by
+
+\$\$ \\frac{ns\^2}{\\sigma\^2} \\sim \\chi\^2\_{n-1} \$\$
+
+or
+
+\$\$s\^2 \\sim \\frac{\\sigma\^2}{n}\\chi\^2\_{n-1} \$\$
+
+As before, and without loss of generality, take σ\^2 as 1, so that treatment effects are standardised treatment effects. For a given trial size, the 95% confidence interval for the true variance of the treatment effect are
+
+```         
+
+                
+```
+
+```{r}
+#| label: variance-ci
+#| echo: FALSE
+#| error: TRUE
+
+results <- lapply(
+  delta,
+  function(x, alpha = 0.05) 
+    tibble(
+      Delta = seq(0.3, 1, 0.1),
+      N = x,
+      LowerVar = qchisq(alpha / 2, x - 1) / N, 
+      UpperVar = qchisq(1 - alpha / 2, x - 1) / N,
+      LowerSD = sqrt(LowerVar),
+      UpperSD = sqrt(UpperVar),
+      LowerMean = 1 + qnorm(alpha/2) * sqrt(2 / N),
+      UpperMean = 1 + qnorm(1 - alpha/2) * sqrt(2 / N)
+    ) %>% 
+    rowwise() %>% 
+    mutate(
+      LowerSS = designPlan <- ceiling(getSampleSizeMeans(design, alternative = Delta*UpperMean, stDev = LowerSD)$nFixed),
+      UpperSS = designPlan <- ceiling(getSampleSizeMeans(design, alternative = Delta*LowerMean, stDev = UpperSD)$nFixed),
+      
+      LowerSSexp = designPlan <- ceiling(getSampleSizeMeans(design, alternative = Delta, stDev = LowerSD)$nFixed),
+      UpperSSexp = designPlan <- ceiling(getSampleSizeMeans(design, alternative = Delta, stDev = UpperSD)$nFixed)
+    )
+) %>% 
+  bind_rows()
+
+results %>% 
+  ggplot() +
+  geom_line(aes(x=N, y=LowerSS, colour=as.factor(Delta))) +
+  geom_line(aes(x=N, y=UpperSS, colour=as.factor(Delta))) +
+  theme_light() +
+  labs(
+    colour = "Reference treatment effect",
+    y = "Main trial size",
+    title = "Main trial size for 80% power",
+    x = "Pilot trial size"
+  )
+results %>% 
+  ggplot() +
+  geom_line(aes(x=Delta, y=LowerSSexp, colour=as.factor(N))) +
+  geom_line(aes(x=Delta, y=UpperSSexp, colour=as.factor(N))) +
+  theme_light() +
+  labs(
+    x = "Reference treatment effect",
+    y = "Main trial size",
+    title = "Main trial size for 80% power",
+    colour = "Pilot trial size"
+  )
+
+results %>% 
+  select(N, Delta, LowerSSexp, UpperSSexp) %>% 
+  kable(
+    digits = c(0, 1, 0, 0),
+    col.names = c("Pilot study N", "Std Trt Effect", "Lower", "Upper"),
+    caption = "Main Trial Size for Power of 80%"
+  ) %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>% 
+  add_header_above(c("  " = 2, "Main Trial Size"= 2))
+```

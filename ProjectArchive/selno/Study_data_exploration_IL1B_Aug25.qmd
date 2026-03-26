@@ -1,0 +1,293 @@
+---
+title: "Exploration of BP44551 IL1Beta data"
+format: html
+toc: true
+toc-depth: 3
+toc-location: left
+toc-expand: true
+reference-location: margin
+embed-resources: TRUE
+params:
+  password: 
+---
+
+```{r}
+#| label: set-up
+#| echo: FALSE
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(knitr)
+  library(kableExtra)
+  library(mvtnorm)
+  library(here)
+  library(parallel)
+  #library(rice)
+  library(ggpubr)
+  library(blandr)
+  #library(irr)
+  #library(psych)
+  library(patchwork)
+  library(plotly)
+  #library(ggcompare)
+})
+
+#source("functions.R", echo = FALSE)
+```
+
+# Raw data of BP44551
+
+```{r}
+#| label: read dataset from OCEAN harbor
+#| echo: false
+#| eval: true
+
+# read IL1B data second transfer
+il1b <- arrow::read_parquet("/ocean/harbour/CDT71057/BP44551/CSRFinal_FA/ref/source/noncrf/EXL5_NC_TAI.parquet") |> 
+  select(PATNUM, LABRESN, LABRESC, VISIT_CODE, VISIT_DATE, LABD, LBSTAT, LBLLOQ, LBULOQ) |> 
+  mutate(VISIT_CODE=factor(VISIT_CODE, levels=c("PRN", "D1", "D15", "D29", "UNSCH"), ordered = TRUE)) |> 
+  arrange(PATNUM, VISIT_CODE) 
+  
+   
+protein <- arrow::read_parquet("/ocean/harbour/CDT71057/BP44551/CSRFinal_FA/ref/source/noncrf/EXL8_NC.parquet") |> 
+  select(PATNUM, LABRESN, LABRESC, VISIT_CODE, VISIT_DATE, LABD, LBSTAT) |> 
+  mutate(VISIT_CODE=factor(VISIT_CODE, levels=c("PRN", "D1", "D15", "D29", "UNSCH"), ordered = TRUE)) |> 
+  arrange(PATNUM, VISIT_CODE)
+
+# merge il1b and protein data by PATNUM and VISIT_CODE
+dRaw <- il1b %>% 
+  left_join(protein, by = c("PATNUM", "VISIT_CODE"), suffix = c("_IL1B", "_PROTEIN")) |> 
+  mutate(AVAL_IL1B = case_when(
+    LABRESC_IL1B == "BLQ" ~ LBLLOQ / 2,
+    LABRESC_IL1B == "ALQ" ~ NA,
+    TRUE ~ LABRESN_IL1B
+  ))
+
+
+```
+
+
+Note: 
+- The units are not the same, total protein is in ug/mL while the cytokines is in pg/mL. 
+- Subject 10033 had a value ALQ on PRN visit, so it is removed from the analysis.
+- 10021 and 10026 Unscheduled visit (mapped to PRN?); 10030 Unscheduled visit (mapped to D1?)
+
+```{r }
+#| label: data processing and check
+#| echo: FALSE
+#| warning: false
+
+d <- dRaw |> 
+  mutate(VISIT = case_when(
+    PATNUM %in% c(10021, 10026) & VISIT_CODE == "UNSCH" ~ "PRN",
+    PATNUM == 10030 & VISIT_CODE == "UNSCH" ~ "D1",
+    TRUE ~ as.character(VISIT_CODE))
+  ) |> 
+  mutate(AVAL_IL1B_LOG = log(AVAL_IL1B), AVAL_PROTEIN = LABRESN_PROTEIN, AVAL_PROTEIN_LOG = log(LABRESN_PROTEIN)) |> 
+  arrange(PATNUM, VISIT) |> 
+  
+  # divide IL1B by protein when protein is not NA
+  mutate(RES = AVAL_IL1B / (AVAL_PROTEIN*1e6), logRES = log(RES))  
+ 
+# Histogram
+hist1 <- d %>% ggplot() + geom_histogram(aes(x=RES), bins = 6, fill="green", alpha=0.5) + xlab("IL1beta")
+hist2 <- d %>% ggplot() + geom_histogram(aes(x=logRES), bins = 6, fill="red", alpha=0.5) + xlab("Log IL1beta")
+
+
+# Boxplot
+boxplot <- d %>% ggplot(aes(x=VISIT, y=logRES, color=VISIT)) +
+  geom_boxplot() + 
+#  stat_compare(aes(label = after_stat(sprintf("%s: %s", method, label))),
+#               bracket = FALSE,
+#               ymin = 140, 
+#               ymax = 160,
+#               ) +
+  theme_bw()
+
+# Spaghetti plot
+spaghetti <- d %>% ggplot(aes(x=VISIT, y=AVAL_IL1B_LOG, label=PATNUM, color=as.factor(PATNUM))) + 
+  geom_point(aes(group=PATNUM)) + 
+  geom_line(aes(group=PATNUM)) 
+  #geom_text(aes(label=PATNUM), color = "red", size = 3) 
+
+(hist1 | hist2) 
+
+(boxplot / spaghetti)
+
+  
+```
+
+
+
+# Descriptive statistics
+
+```{r}
+#| label: summary
+#| echo: FALSE
+
+# mean and std
+d %>% filter(VISIT %in% c("PRN", "D1",  "D15", "D29")) |> 
+  group_by(VISIT) %>% 
+  summarise(
+    across(
+      .cols = c(logRES, AVAL_IL1B_LOG),
+      .fns = list(
+        N = \(x) sum(!is.na(x)), 
+        #Missing = \(x) sum(is.na(x)),
+        #Mean = \(x) mean(x, na.rm = TRUE),
+        SD = \(x) sd(x, na.rm = TRUE)
+      )
+    )
+  )  %>% 
+  kable(digits = 2)
+
+
+```
+
+# Correlation analysis
+
+```{r}
+#| label: correlation 
+#| echo: false
+#| warning: false
+
+# transform dataset from long to wide format
+d1 <- d %>% select(PATNUM, VISIT, RES, logRES) %>%
+  #group_by(PATNUM, VISIT) %>% 
+  #summarise(logRES = mean(logRES, na.rm = TRUE), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = VISIT,
+    values_from = c(RES, logRES)
+  ) %>% 
+  mutate(DIFF = RES_D1 - RES_PRN) 
+
+d1 %>% select(-DIFF) |> kable(digits=1)
+
+
+# raw scale
+corp1 <- d1 %>% filter(!is.na(DIFF)) %>% 
+  ggplot(aes(x = RES_PRN, y = RES_D1)) +
+  geom_point() +
+  #geom_text(aes(label=PATNUM), color = "red", size = 2) +
+  stat_cor(p.accuracy = 0.001, r.accuracy = 0.01) +
+  geom_smooth(method = "lm") +
+  labs(x = "RUN-IN", y = "Day1", title = "Il1Beta") + 
+  theme_classic()
+
+# cor.test(d1$RES_PRN, d1$RES_D1, conf.level = 0.95, na.action="na.omit")
+
+# log scale
+# Calculate correlation and confidence interval
+cor_test <- cor.test(d1$logRES_PRN, d1$logRES_D1, method = "pearson")
+corr <- round(cor_test$estimate, 2)
+corr_lci <- round(cor_test$conf.int[1], 2)
+corr_uci <- round(cor_test$conf.int[2], 2)
+conf_level <- attr(cor_test$conf.int, "conf.level") * 100
+
+corp2 <- d1 %>% filter(!is.na(DIFF)) %>% 
+  ggplot(aes(x = logRES_PRN, y = logRES_D1)) +
+  geom_point() +
+  #geom_text(aes(label=PATNUM), color = "red", size = 2) +
+  stat_cor(p.accuracy = 0.001, r.accuracy = 0.01) +
+  geom_smooth(method = "lm") +
+  labs(x = "RUN-IN", y = "Day1", title = "log-Il1Beta") + 
+  theme_classic() +
+  annotate("text", 
+           x = min(d1 %>% filter(!is.na(DIFF)) |> pull(logRES_D1)), 
+           y = max(d1 %>% filter(!is.na(DIFF)) |> pull(logRES_PRN)),
+           label = paste0("\n", conf_level, "% CI: [", corr_lci, ", ", corr_uci, "]"),
+           hjust = 0, vjust = 1, size = 4,
+           color = "black")
+
+cowplot::plot_grid(corp1, corp2, labels = "auto", label_size = 12, align = "h")
+
+```
+
+# Agreement analysis
+
+```{r}
+#| label: ICC 
+#| echo: false
+#| eval: false
+
+# icc calculation 
+d2 <- d1 %>% filter(!is.na(DIFF))
+ICC <- psych::ICC(cbind(d2$RES_PRN, d2$RES_D1))$results
+#psych::ICC(cbind(d2$RES_PRN, d2$RES_D1))$lme # output variance component
+kable(ICC %>% filter(type=="ICC3"), digits = 2) # type ICC3 is what we want
+
+# reulsts cross validated using lmer or aov
+d3 <- d %>% filter(PATNUM!=10016) 
+#summary(lme4::lmer(RES ~ 1+ (1|PATNUM) + VISIT, d3))
+#summary(lme4::lmer(RES ~ 1+ (1|PATNUM) + (1|VISIT), d3))
+
+#summary(lme4::lmer(logRES ~ 1+ (1|PATNUM) + VISIT, d3))
+
+#summary(lme4::lmer(logRES ~ 1+ (1|PATNUM) + (1|VISIT), d3))
+#psych::ICC(cbind(d2$logRES_PRN, d2$logRES_D1))$lme # output variance component
+
+# irr:icc seems only provide two-way random effects (ICC2) rather than two-way mixed effects (ICC3)
+#irr::icc(cbind(d1$RES_PRN, d1$RES_D1), model = "twoway", type = "agreement", unit = "single")
+```
+
+## Bland-Altman analysis
+
+Plot of differences between two measurements. Shaded areas present confidence interval limits for mean and agreement limits.
+
+```{r}
+#| label: Bland-Altman
+#| echo: false
+#| warning: false
+
+# run the below one line code to generate plot  
+# with(d2, blandr.draw(RES_PRN, RES_D1, annotate = TRUE))
+
+d2 <- d1 %>% filter(!is.na(DIFF))
+
+statistics.results <- with(d2, blandr.statistics(RES_PRN , RES_D1))
+blandr.plot.ggplot( statistics.results,
+                    plotTitle = "Bland-Altman plot for comparison of 2 measurements",) +
+  geom_text(aes(label=round(statistics.results$bias,1)), x=200, y=0, color="white")
+```
+
+Plot of differences between two measurements (log-transformed). Shaded areas present confidence interval limits for mean and agreement limits.
+
+```{r}
+#| label: Bland-Altman analysis on log-scale
+#| echo: false
+#| warning: false
+
+# run the below one line code to generate plot  
+# with(d2, blandr.draw(RES_PRN, RES_D1, annotate = TRUE))
+
+statistics.results.log <- with(d2, blandr.statistics(logRES_PRN , logRES_D1))
+blandr.plot.ggplot( statistics.results.log,
+                    plotTitle = "Bland-Altman plot for comparison of 2 measurements",) +
+  geom_text(aes(label=round(statistics.results.log$bias,1)), x=4, y=0, color="white")
+```
+
+
+Plot of differences between two measurements, expressed as percentages of the values on the axis \[(PRN – D1)/((PRN + D1)/2)%)\], vs. the mean of the two measurements.
+
+```{r}
+#| label: Bland-Altman - plot difference as percentage
+#| echo: false
+#| warning: false
+#| eval: true
+
+d1 <- d1 %>%  
+  mutate(RES_PRN_REL=2*RES_PRN/(RES_PRN+RES_D1)*100,
+         RES_D1_REL= 2*RES_D1 /(RES_PRN+RES_D1)*100
+  )
+# Passes data to the blandr.statistics function to generate Bland-Altman statistics
+statistics.results.rel <- with(d1, blandr.statistics( RES_PRN_REL , RES_D1_REL ))
+
+# replace the relative means with raw means for plot
+statistics.results.rel$means <-  statistics.results$means
+
+# Generates a ggplot, with no optional arguments
+blandr.plot.ggplot( statistics.results.rel,
+                    plotTitle = "Bland-Altman plot for comparison of 2 measurements",) + 
+  labs(y= "Difference/Average(%)") +
+  geom_text(aes(label=round(statistics.results.rel$bias,1)), x=200, y=0, color="white")
+```
