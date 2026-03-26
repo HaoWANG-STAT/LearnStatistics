@@ -1,3 +1,4 @@
+# https://www.rdatagen.net/post/2025-01-28-handling-covariates-in-an-analysis-of-an-rct/
 library(simstudy)
 library(data.table)
 #library(stargazer)
